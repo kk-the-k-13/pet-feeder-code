@@ -1,0 +1,326 @@
+#include <ESP32Servo.h>
+#include <SPI.h>
+#include <SD.h>
+
+// =====================================
+// PIN DEFINITIONS
+// =====================================
+
+// IR reflective sensor
+#define IR_PIN 4
+
+// Servo
+#define SERVO_PIN 14
+
+// MicroSD
+#define SD_MOSI 7
+#define SD_MISO 8
+#define SD_SCK  15
+#define SD_CS   5
+
+// HC-SR04
+#define TRIG_PIN 16
+#define ECHO_PIN 17
+
+
+// =====================================
+// SERVO SETTINGS
+// =====================================
+
+Servo feederServo;
+
+const int CLOSED_POSITION = 0;
+const int OPEN_POSITION   = 90;
+
+
+// =====================================
+// ULTRASONIC SETTINGS
+// =====================================
+
+// Open when pet is 20 cm or closer
+const float OPEN_DISTANCE = 20.0;
+
+// Close when pet moves beyond 25 cm
+const float CLOSE_DISTANCE = 25.0;
+
+
+// =====================================
+// SYSTEM VARIABLES
+// =====================================
+
+bool feederOpen = false;
+bool sdReady = false;
+
+
+// =====================================
+// READ ULTRASONIC DISTANCE
+// =====================================
+
+float getDistance() {
+
+  // Clear trigger
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+
+  // Send 10 microsecond pulse
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+
+  digitalWrite(TRIG_PIN, LOW);
+
+  // Read echo
+  unsigned long duration =
+      pulseIn(ECHO_PIN, HIGH, 30000);
+
+  // No echo received
+  if (duration == 0) {
+    return -1;
+  }
+
+  // Convert to centimetres
+  float distance =
+      duration * 0.0343 / 2.0;
+
+  return distance;
+}
+
+
+// =====================================
+// SAVE EVENT TO SD CARD
+// =====================================
+
+void logEvent(String message) {
+
+  if (!sdReady) {
+    return;
+  }
+
+  File file =
+      SD.open("/feeding_log.txt", FILE_APPEND);
+
+  if (file) {
+
+    file.println(message);
+    file.close();
+
+    Serial.println("Event saved to SD");
+
+  } else {
+
+    Serial.println("Could not open log file");
+  }
+}
+
+
+// =====================================
+// OPEN FEEDER
+// =====================================
+
+void openFeeder() {
+
+  // Don't repeatedly command servo
+  if (feederOpen) {
+    return;
+  }
+
+  Serial.println();
+  Serial.println("====================");
+  Serial.println("PET DETECTED");
+  Serial.println("OPENING FEEDER");
+  Serial.println("====================");
+
+  feederServo.write(OPEN_POSITION);
+
+  feederOpen = true;
+
+  logEvent("Feeder OPENED - pet detected");
+}
+
+
+// =====================================
+// CLOSE FEEDER
+// =====================================
+
+void closeFeeder() {
+
+  if (!feederOpen) {
+    return;
+  }
+
+  Serial.println();
+  Serial.println("====================");
+  Serial.println("PET MOVED AWAY");
+  Serial.println("CLOSING FEEDER");
+  Serial.println("====================");
+
+  feederServo.write(CLOSED_POSITION);
+
+  feederOpen = false;
+
+  logEvent("Feeder CLOSED - pet moved away");
+}
+
+
+// =====================================
+// SETUP
+// =====================================
+
+void setup() {
+
+  Serial.begin(115200);
+
+  delay(2000);
+
+  Serial.println();
+  Serial.println("=============================");
+  Serial.println("     SMART PET FEEDER");
+  Serial.println("=============================");
+
+
+  // -------------------------
+  // IR SENSOR
+  // -------------------------
+
+  pinMode(IR_PIN, INPUT);
+
+  Serial.println("[OK] IR sensor initialized");
+
+
+  // -------------------------
+  // ULTRASONIC SENSOR
+  // -------------------------
+
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  digitalWrite(TRIG_PIN, LOW);
+
+  Serial.println("[OK] Ultrasonic initialized");
+
+
+  // -------------------------
+  // SERVO
+  // -------------------------
+
+  feederServo.setPeriodHertz(50);
+
+  feederServo.attach(
+    SERVO_PIN,
+    500,
+    2400
+  );
+
+  feederServo.write(CLOSED_POSITION);
+
+  Serial.println("[OK] Servo initialized");
+
+
+  // -------------------------
+  // MICRO SD
+  // -------------------------
+
+  SPI.begin(
+    SD_SCK,
+    SD_MISO,
+    SD_MOSI,
+    SD_CS
+  );
+
+  if (SD.begin(SD_CS, SPI)) {
+
+    sdReady = true;
+
+    Serial.println("[OK] SD card ready");
+
+    File file =
+        SD.open("/feeding_log.txt", FILE_APPEND);
+
+    if (file) {
+
+      file.println(
+        "------------------------------"
+      );
+
+      file.println(
+        "Smart Pet Feeder Started"
+      );
+
+      file.close();
+    }
+
+  } else {
+
+    Serial.println("[WARNING] SD card not detected");
+  }
+
+
+  Serial.println();
+  Serial.println("SYSTEM READY");
+  Serial.println("=============================");
+}
+
+
+// =====================================
+// MAIN LOOP
+// =====================================
+
+void loop() {
+
+  // Read ultrasonic
+  float distance = getDistance();
+
+  // Read IR
+  int irState = digitalRead(IR_PIN);
+
+
+  // ===================================
+  // DISPLAY SENSOR INFORMATION
+  // ===================================
+
+  Serial.print("Distance: ");
+
+  if (distance == -1) {
+
+    Serial.print("NO ECHO");
+
+  } else {
+
+    Serial.print(distance, 1);
+    Serial.print(" cm");
+  }
+
+
+  Serial.print(" | IR: ");
+
+  Serial.println(irState);
+
+
+  // ===================================
+  // PET DETECTED
+  // ===================================
+
+  if (distance > 0 &&
+      distance <= OPEN_DISTANCE) {
+
+    openFeeder();
+  }
+
+
+  // ===================================
+  // PET MOVED AWAY
+  // ===================================
+
+  if (distance >= CLOSE_DISTANCE) {
+
+    closeFeeder();
+  }
+
+
+  // ===================================
+  // IMPORTANT:
+  // Do NOT close immediately because of
+  // one NO ECHO reading.
+  // ===================================
+
+  delay(200);
+}
